@@ -1,0 +1,10 @@
+name = "self-healing-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[vars]
+DISTIL_ENDPOINT = "https://model.inferx.net/funccall/tn-c8uu7uzejn/default/massive-iot-traces1/v1/completions"
+DISTIL_MODEL = "distillabs/massive-iot-traces1"
+
+# Secrets (set via `wrangler secret put`):
+#   DISTIL_API_KEY

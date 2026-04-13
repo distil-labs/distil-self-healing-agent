@@ -1,0 +1,12 @@
+{
+  "root_cause": "schema_mismatch",
+  "file": "industrial_gateway.py",
+  "variable": "APPROVED_SCHEMA",
+  "fix_action": "append vibration_hz",
+  "new_value": [
+    "device_id",
+    "temp",
+    "pressure",
+    "vibration_hz"
+  ]
+}
