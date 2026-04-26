@@ -15,13 +15,15 @@ Usage:
 import json
 import sys
 import time
+from pathlib import Path
 
 import requests
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8788"
 POLL_ENDPOINT = f"{BASE_URL}/api/diagnosis"
 POLL_INTERVAL = 3  # seconds
-OUTPUT_FILE = "diagnosis_output.json"
+OUTPUT_FILE = PROJECT_ROOT / "diagnosis_output.json"
 
 
 def poll():

@@ -1,0 +1,30 @@
+{
+  "iot_gateway": {
+    "file": "iot-gateway/industrial_gateway.py",
+    "schema_file": "config/demo_contract.json",
+    "schema_path": "iot_gateway.approved_schema",
+    "approved_schema": ["device_id", "temp", "pressure"],
+    "mqtt_topic": "factory/v3/telemetry",
+    "behavior": "Validates incoming JSON telemetry and exits 1 when a payload field is not in the approved schema."
+  },
+  "payloads": {
+    "good": {
+      "device_id": "plc-conveyor-07",
+      "temp": 81.3,
+      "pressure": 1.02
+    },
+    "bad": {
+      "device_id": "plc-conveyor-07",
+      "temp": 81.3,
+      "pressure": 1.02,
+      "vibration_hz": 42.7
+    }
+  },
+  "diagnosis": {
+    "root_cause": "schema_mismatch",
+    "remediation_file": "config/demo_contract.json",
+    "remediation_variable": "iot_gateway.approved_schema",
+    "fix_action": "append vibration_hz",
+    "new_value": ["device_id", "temp", "pressure", "vibration_hz"]
+  }
+}

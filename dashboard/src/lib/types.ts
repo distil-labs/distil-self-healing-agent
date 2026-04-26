@@ -1,3 +1,13 @@
+import demoContract from '../../../config/demo_contract.json';
+
+export type DiagnosisValue =
+	| string
+	| number
+	| boolean
+	| null
+	| DiagnosisValue[]
+	| { [key: string]: DiagnosisValue };
+
 export interface TelemetryPayload {
 	device_id: string;
 	temp: number;
@@ -19,7 +29,36 @@ export interface Diagnosis {
 	file: string;
 	variable: string;
 	fix_action: string;
-	new_value: string;
+	new_value: DiagnosisValue;
+}
+
+export type RemediationStatus = 'diagnosis_ready' | 'claimed' | 'running' | 'fixed' | 'failed' | 'cleared';
+
+export interface RemediationEvent {
+	id: string;
+	timestamp: string;
+	type: string;
+	message: string;
+	details?: DiagnosisValue;
+}
+
+export interface RemediationJob {
+	id: string;
+	status: RemediationStatus;
+	created_at: string;
+	updated_at: string;
+	diagnosis: Diagnosis;
+	target_file: string;
+	target_variable: string;
+	fix_action: string;
+	new_value: DiagnosisValue;
+	verify_command: string;
+	expected_result: string;
+	claimed_at?: string;
+	completed_at?: string;
+	completion_summary?: string;
+	verification?: DiagnosisValue;
+	events: RemediationEvent[];
 }
 
 export interface PipelineState {
@@ -29,17 +68,8 @@ export interface PipelineState {
 	error: string | null;
 }
 
-export const APPROVED_SCHEMA = ['device_id', 'temp', 'pressure'];
+export const APPROVED_FIELDS = demoContract.iot_gateway.approved_schema;
 
-export const GOOD_PAYLOAD: TelemetryPayload = {
-	device_id: 'plc-conveyor-07',
-	temp: 81.3,
-	pressure: 1.02,
-};
+export const GOOD_PAYLOAD: TelemetryPayload = demoContract.payloads.good;
 
-export const BAD_PAYLOAD: TelemetryPayload = {
-	device_id: 'plc-conveyor-07',
-	temp: 81.3,
-	pressure: 1.02,
-	vibration_hz: 42.7,
-};
+export const BAD_PAYLOAD: TelemetryPayload = demoContract.payloads.bad;

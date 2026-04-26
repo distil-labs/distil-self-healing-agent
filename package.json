@@ -1,0 +1,19 @@
+{
+	"name": "distil-warp-self-healing-demo",
+	"version": "0.1.0",
+	"private": true,
+	"scripts": {
+		"setup": "bash scripts/setup.sh",
+		"doctor": "bash scripts/doctor.sh",
+		"dev": "bash scripts/dev.sh",
+		"dev:worker": "cd worker && npm run dev",
+		"dev:dashboard": "cd dashboard && VITE_WORKER_URL=${VITE_WORKER_URL:-http://localhost:8788} npm run dev",
+		"check": "cd worker && npx tsc --noEmit && cd ../dashboard && npm run check && cd .. && python3 -m py_compile iot-gateway/industrial_gateway.py iot-gateway/reproduce_crash.py iot-gateway/send_telemetry.py scripts/diagnose_crash.py scripts/warp_oz_poll.py",
+		"build": "cd dashboard && npm run build",
+		"deploy:worker": "cd worker && npm run deploy",
+		"deploy:dashboard": "bash scripts/deploy_dashboard.sh",
+		"oz:local": "bash scripts/run_oz_remediation.sh",
+		"oz:cloud": "bash scripts/run_oz_remediation.sh --cloud",
+		"reproduce": "python3 iot-gateway/reproduce_crash.py"
+	}
+}

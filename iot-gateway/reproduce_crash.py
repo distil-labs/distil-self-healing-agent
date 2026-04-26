@@ -13,24 +13,28 @@ model for automated root-cause diagnosis.
 import subprocess
 import sys
 import json
+from pathlib import Path
 
-# Simulated payload from an upgraded sensor firmware (v2.4)
-# that now reports vibration data the gateway doesn't expect.
-PAYLOAD = {
-    "device_id": "plc-conveyor-07",
-    "temp": 81.3,
-    "pressure": 1.02,
-    "vibration_hz": 42.7,  # <-- NEW field causing the crash
-}
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONTRACT_PATH = PROJECT_ROOT / "config" / "demo_contract.json"
+GATEWAY_PATH = Path(__file__).with_name("industrial_gateway.py")
+
+
+def load_bad_payload() -> dict:
+    """Load the schema-evolution payload from the shared demo contract."""
+    with CONTRACT_PATH.open() as f:
+        contract = json.load(f)
+    return contract["payloads"]["bad"]
 
 
 def main():
-    raw_json = json.dumps(PAYLOAD)
+    payload = load_bad_payload()
+    raw_json = json.dumps(payload)
     print(f"[reproduce_crash] Sending payload to industrial_gateway.py:")
     print(f"  {raw_json}\n")
 
     result = subprocess.run(
-        [sys.executable, "industrial_gateway.py", raw_json],
+        [sys.executable, str(GATEWAY_PATH), raw_json],
         capture_output=True,
         text=True,
     )
@@ -46,7 +50,7 @@ def main():
               "Error log captured above for Distil Labs diagnosis.")
     else:
         print("\n[reproduce_crash] WARNING: Gateway did NOT crash. "
-              "Check APPROVED_SCHEMA.")
+              "Check the shared approved schema.")
 
     return result.returncode
 
