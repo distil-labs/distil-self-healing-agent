@@ -1,6 +1,5 @@
 <script lang="ts">
-	import type { TelemetryEvent, Diagnosis } from '$lib/types';
-	import { BAD_PAYLOAD, GOOD_PAYLOAD } from '$lib/types';
+	import type { TelemetryEvent, Diagnosis, RemediationJob } from '$lib/types';
 	import { WORKER_URL } from '$lib/config';
 
 	type Phase =
@@ -16,27 +15,29 @@
 	let phase = $state<Phase>('idle');
 	let events = $state<TelemetryEvent[]>([]);
 	let diagnosis = $state<Diagnosis | null>(null);
+	let currentJob = $state<RemediationJob | null>(null);
 	let errorLog = $state<string | null>(null);
 	let warpPolling = $state(false);
+	let warpPollRun = 0;
 
 	function addEvent(evt: TelemetryEvent) {
 		events = [evt, ...events];
 	}
 
 	async function sendTelemetry(bad: boolean) {
+		warpPollRun += 1;
 		phase = 'sending';
 		errorLog = null;
 		diagnosis = null;
-
-		const payload = bad ? BAD_PAYLOAD : GOOD_PAYLOAD;
+		currentJob = null;
 
 		await sleep(400);
 		phase = 'validating';
 
-		const res = await fetch(`${WORKER_URL}/api/telemetry`, {
+		const res = await fetch(`${WORKER_URL}/api/demo/telemetry`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(payload),
+			body: JSON.stringify({ bad }),
 		});
 
 		const data = await res.json();
@@ -44,7 +45,7 @@
 		const evt: TelemetryEvent = {
 			id: crypto.randomUUID(),
 			timestamp: data.timestamp,
-			payload,
+			payload: data.payload,
 			status: data.status,
 			error: data.error,
 		};
@@ -57,24 +58,20 @@
 			await sleep(1200);
 			phase = 'diagnosing';
 
-			const diagRes = await fetch(`${WORKER_URL}/api/diagnose`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ crash_log: data.crash_log }),
-			});
+			if (data.diagnosis_error || !data.diagnosis) {
+				const detail = data.diagnosis_error?.error ?? 'Worker did not return a diagnosis.';
+				errorLog = `${data.crash_log}\n\nDiagnosis request failed: ${detail}`;
+				phase = 'crash_detected';
+				return;
+			}
 
-			const diagData = await diagRes.json();
-			diagnosis = diagData.diagnosis;
+			diagnosis = data.diagnosis;
+			currentJob = data.job ?? null;
 			phase = 'diagnosis_ready';
 
-			// Store diagnosis for Warp Oz polling
-			await fetch(`${WORKER_URL}/api/diagnosis`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ diagnosis }),
-			});
-
 			phase = 'awaiting_warp';
+			warpPollRun += 1;
+			void waitForWarpRemediation(warpPollRun, currentJob?.id ?? data.incident_id);
 		} else {
 			phase = 'fixed';
 			await sleep(2000);
@@ -82,8 +79,84 @@
 		}
 	}
 
+	async function waitForWarpRemediation(run: number, incidentId?: string) {
+		warpPolling = true;
+
+		for (let attempt = 0; attempt < 60; attempt += 1) {
+			await sleep(3000);
+			if (run !== warpPollRun || phase !== 'awaiting_warp') {
+				warpPolling = false;
+				return;
+			}
+
+			let data;
+			try {
+				const endpoint = incidentId
+					? `${WORKER_URL}/api/incidents/${incidentId}`
+					: `${WORKER_URL}/api/incidents/latest`;
+				const res = await fetch(endpoint);
+				data = await res.json();
+			} catch {
+				continue;
+			}
+
+			if (data.job) {
+				currentJob = data.job;
+			}
+
+			if (data.status === 'fixed') {
+				warpPolling = false;
+				phase = 'fixed';
+				await sleep(2000);
+				if (run === warpPollRun) {
+					phase = 'idle';
+				}
+				return;
+			}
+
+			if (data.status === 'failed') {
+				warpPolling = false;
+				errorLog = `${errorLog ?? ''}\n\nOz remediation failed: ${data.job?.completion_summary ?? 'No summary provided.'}`;
+				phase = 'crash_detected';
+				return;
+			}
+
+			if (data.status === 'cleared' || data.status === 'empty') {
+				warpPolling = false;
+				phase = 'idle';
+				return;
+			}
+		}
+
+		warpPolling = false;
+	}
+
+	async function resetDemo() {
+		warpPollRun += 1;
+		warpPolling = false;
+		try {
+			await fetch(`${WORKER_URL}/api/diagnosis`, { method: 'DELETE' });
+		} catch {
+			// Local demos should still be resettable if the Worker is not running.
+		}
+		phase = 'idle';
+		diagnosis = null;
+		currentJob = null;
+		errorLog = null;
+	}
+
 	function sleep(ms: number) {
 		return new Promise((r) => setTimeout(r, ms));
+	}
+
+	function formatDiagnosisValue(value: Diagnosis['new_value']): string {
+		if (value === null) return 'null';
+		if (typeof value === 'object') return JSON.stringify(value, null, 2);
+		return String(value);
+	}
+
+	function eventLabel(eventType: string): string {
+		return eventType.replaceAll('_', ' ');
 	}
 
 	function phaseLabel(p: Phase): string {
@@ -164,6 +237,14 @@
 		>
 			Send Good Telemetry
 		</button>
+		{#if phase !== 'idle'}
+			<button
+				onclick={resetDemo}
+				class="rounded-lg border border-gray-700 px-5 py-2.5 text-sm font-semibold text-gray-200 transition hover:border-gray-500 hover:bg-gray-900"
+			>
+				Reset Demo
+			</button>
+		{/if}
 	</div>
 
 	<!-- Two-column layout -->
@@ -192,7 +273,10 @@
 						<div><span class="text-gray-500">file:</span> <span class="text-blue-300">{diagnosis.file}</span></div>
 						<div><span class="text-gray-500">variable:</span> <span class="text-blue-300">{diagnosis.variable}</span></div>
 						<div><span class="text-gray-500">fix_action:</span> <span class="text-emerald-300">{diagnosis.fix_action}</span></div>
-						<div><span class="text-gray-500">new_value:</span> <span class="text-emerald-300">{diagnosis.new_value}</span></div>
+						<div>
+							<span class="text-gray-500">new_value:</span>
+							<pre class="mt-1 whitespace-pre-wrap text-emerald-300">{formatDiagnosisValue(diagnosis.new_value)}</pre>
+						</div>
 					</div>
 				{:else if phase === 'diagnosing'}
 					<div class="flex items-center gap-2 text-sm text-amber-400">
@@ -214,11 +298,30 @@
 					<div class="space-y-2">
 						<div class="flex items-center gap-2 text-sm text-blue-400">
 							<div class="h-2 w-2 animate-pulse rounded-full bg-blue-400"></div>
-							Diagnosis published. Waiting for Warp Oz to poll...
+							{#if currentJob?.status === 'claimed'}
+								Warp Oz claimed incident {currentJob.id}.
+							{:else if currentJob?.status === 'running'}
+								Warp Oz is applying the remediation.
+							{:else}
+								Diagnosis queued as incident {currentJob?.id ?? 'pending'}. {warpPolling ? 'Watching job state...' : 'Waiting for Warp Oz to claim...'}
+							{/if}
 						</div>
 						<p class="text-xs text-gray-600">
-							Warp Oz polls <code class="text-gray-400">GET /api/diagnosis</code> to pick up the structured diagnosis, then applies the fix autonomously.
+							Warp Oz claims <code class="text-gray-400">POST /api/remediation/next</code>, emits events to <code class="text-gray-400">/api/incidents/:id/events</code>, then completes the job.
 						</p>
+						{#if currentJob?.events?.length}
+							<div class="mt-3 space-y-2 border-t border-gray-800 pt-3">
+								{#each currentJob.events as event (event.id)}
+									<div class="font-mono text-xs">
+										<div class="flex items-center justify-between gap-3">
+											<span class="uppercase text-blue-300">{eventLabel(event.type)}</span>
+											<span class="text-gray-700">{event.timestamp}</span>
+										</div>
+										<p class="mt-1 text-gray-500">{event.message}</p>
+									</div>
+								{/each}
+							</div>
+						{/if}
 					</div>
 				{:else if phase === 'fixed'}
 					<div class="flex items-center gap-2 text-sm text-emerald-400">

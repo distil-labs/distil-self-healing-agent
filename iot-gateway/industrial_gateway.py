@@ -6,14 +6,13 @@ APPROVED_SCHEMA. Any field not in the approved list triggers a CRITICAL
 SCHEMA_MISMATCH error and halts the process.
 
 Key variable for automated remediation:
-    APPROVED_SCHEMA (list): The allowlist of accepted telemetry fields.
-    Location: line ~20 of this file.
+    config/demo_contract.json -> iot_gateway.approved_schema
 """
 
+import logging
 import json
 import sys
-import logging
-from datetime import datetime, timezone
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -22,13 +21,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("industrial_gateway")
 
-# ──────────────────────────────────────────────
-# APPROVED_SCHEMA — the only fields the gateway will accept.
-# To onboard a new sensor field, append it to this list.
-# ──────────────────────────────────────────────
-APPROVED_SCHEMA = ["device_id", "temp", "pressure"]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+CONTRACT_PATH = PROJECT_ROOT / "config" / "demo_contract.json"
 
-MQTT_TOPIC = "factory/v3/telemetry"
+
+def load_gateway_contract() -> tuple[list[str], str]:
+    """Load the shared demo contract that defines the active gateway schema."""
+    with CONTRACT_PATH.open() as f:
+        contract = json.load(f)
+    gateway = contract["iot_gateway"]
+    return list(gateway["approved_schema"]), gateway["mqtt_topic"]
+
+
+# APPROVED_SCHEMA is intentionally sourced from config/demo_contract.json so
+# the gateway, Worker, dashboard, and prompt all share the same allowlist.
+APPROVED_SCHEMA, MQTT_TOPIC = load_gateway_contract()
 
 
 def validate_payload(payload: dict) -> None:

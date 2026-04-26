@@ -1,0 +1,23 @@
+# Local Wrangler secrets/vars.
+#
+# Copy to worker/.dev.vars for local `wrangler dev`:
+#   cp worker/.dev.vars.example worker/.dev.vars
+#
+# In production, set DISTIL_API_KEY with:
+#   cd worker && npx wrangler secret put DISTIL_API_KEY
+
+DISTIL_API_KEY=your_distil_api_key
+
+# Optional local overrides. wrangler.toml already defines these for normal use.
+DISTIL_ENDPOINT=https://your-inference-endpoint/v1/completions
+DISTIL_MODEL=distillabs/massive-iot-traces1
+ALLOWED_ORIGIN=*
+
+# Oz cloud trigger path. These are optional unless you want the Worker to
+# trigger Oz Cloud directly through POST /api/oz/trigger or OZ_AUTO_TRIGGER=true.
+WARP_API_KEY=wk-your-warp-api-key
+OZ_ENVIRONMENT_ID=your_oz_environment_id
+OZ_AGENT_API_URL=https://app.warp.dev/api/v1/agent/run
+OZ_AGENT_RUNS_API_URL=https://app.warp.dev/api/v1/agent/runs
+OZ_AUTO_TRIGGER=false
+WORKER_PUBLIC_URL=http://localhost:8788
