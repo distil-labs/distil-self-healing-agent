@@ -439,4 +439,6 @@ Then look at:
 
 ## License / Usage
 
-No license file is currently included in this repository. Treat the contents as internal project material unless you add a license explicitly.
+MIT
+
+Copyright (c) 2026 Distil Labs
