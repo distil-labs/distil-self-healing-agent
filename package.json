@@ -1,6 +1,7 @@
 {
 	"name": "distil-warp-self-healing-demo",
 	"version": "0.1.0",
+	"license": "MIT",
 	"private": true,
 	"scripts": {
 		"setup": "bash scripts/setup.sh",

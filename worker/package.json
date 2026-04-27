@@ -1,6 +1,7 @@
 {
 	"name": "self-healing-api",
 	"version": "0.0.1",
+	"license": "MIT",
 	"private": true,
 	"scripts": {
 		"dev": "wrangler dev",
