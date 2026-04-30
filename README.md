@@ -1,4 +1,4 @@
-# Self-Healing Infrastructure Loop Demo
+# Autonomous bug-fixing agent with Distil Labs SLM + Warp Oz
 
 This repository contains a working demo of a self-healing incident-response loop built around three ideas:
 
