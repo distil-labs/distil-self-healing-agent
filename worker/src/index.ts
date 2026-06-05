@@ -158,6 +158,20 @@ function createRemediationJob(
 	};
 }
 
+/**
+ * The output contract as an enforced trust boundary.
+ *
+ * The orchestrator (Oz) only ever receives the scoped remediation instruction —
+ * never the raw crash log or telemetry. The crash log stays on the Worker-owned
+ * incident record, where operators and the dashboard can still see it; it is
+ * stripped from the job handed to Oz. This makes the privacy boundary described
+ * in intelligent-harness.md a property of the code, not just a convention.
+ */
+function toAgentJob(job: RemediationJob): RemediationJob {
+	const { crash_log: _crashLog, prompt_length: _promptLength, ...agentJob } = job;
+	return agentJob;
+}
+
 function incidentStore(env: Env): DurableObjectStub {
 	const id = env.INCIDENT_STORE.idFromName('self-healing-loop');
 	return env.INCIDENT_STORE.get(id);
@@ -421,7 +435,8 @@ export class IncidentStore {
 		job.events.push(createRemediationEvent('oz_claimed', 'Warp Oz claimed the remediation job.'));
 		await this.updateJob(job);
 
-		return { status: 'claimed', incident_id: job.id, job };
+		// Hand Oz only the scoped instruction — the crash log stays on the Worker.
+		return { status: 'claimed', incident_id: job.id, job: toAgentJob(job) };
 	}
 
 	private async appendEvent(

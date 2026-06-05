@@ -41,7 +41,7 @@ The harness works because the SLM tool and the orchestrator communicate through 
 }
 ```
 
-Oz reads the fields and executes — it does not parse a paragraph of reasoning or evaluate whether the diagnosis is correct. The contract eliminates a whole class of agent-LLM integration failures (malformed output, inconsistent formats, output that needs interpretation) because a fine-tuned SLM emits the same shape every time. It is also the **trust boundary**: Oz only ever sees the 5-field instruction, never the raw crash log, telemetry, or customer data.
+Oz reads the fields and executes — it does not parse a paragraph of reasoning or evaluate whether the diagnosis is correct. The contract eliminates a whole class of agent-LLM integration failures (malformed output, inconsistent formats, output that needs interpretation) because a fine-tuned SLM emits the same shape every time. It is also the **trust boundary**: Oz only ever sees the scoped instruction, never the raw crash log, telemetry, or customer data. This is enforced in code, not just by convention — the crash log is stored on the Worker-owned incident record but stripped from the job handed to Oz (`toAgentJob` in `worker/src/index.ts`).
 
 ### Why it is cheaper
 
@@ -454,6 +454,17 @@ VITE_WORKER_URL=https://<your-worker>.workers.dev npm run deploy:dashboard
 - The agent side is represented by an API contract for Oz to claim, emit events, and complete remediation jobs.
 - The IoT scenario is intentionally narrow: it demonstrates the pattern with a failure that is easy to verify and easy to explain.
 - The frontend and backend are intentionally separated so the runtime boundaries stay clear.
+
+## Out of Scope
+
+This demo proves the harness pattern with one SLM tool end to end. The following belong to the multi-tool / "tool marketplace" direction and are deliberately **out of scope** here — each is a clean extension point on the foundation above, not a rewrite:
+
+- **One remediation shape.** The orchestrator executes a single fix type — set a JSON path to a new value (`oz/remediation_prompt.md`), and `verify_command` is fixed per job. Tools whose fix is different in kind (restart a service, bump a dependency, rotate a certificate) would need per-tool remediation type and verify command. The diagnosis side is pluggable; the execution side is not yet.
+- **Single inference endpoint and credentials.** Every tool calls the same `DISTIL_ENDPOINT` with the same key; `model()` only swaps the model name. Independently deployed or third-party SLM tools would each need their own endpoint and auth.
+- **One global output contract.** The 5-field `Diagnosis` is assumed by the whole pipeline (control plane, durable store, dashboard, Oz). Per-tool input/output contracts are not supported downstream yet.
+- **First-match routing.** `selectTool()` returns the first tool whose signature matches the crash log. With many tools you would want confidence scoring and conflict resolution; routing could itself become an SLM tool.
+- **Build-time tool registration.** Tools are code in `worker/src/harness.ts` and ship with a deploy. A true marketplace would add runtime registration, versioning, and provenance (which tool handled an incident is currently surfaced on the API response but not persisted on the durable job).
+- **Token economics are illustrated, not measured.** The cost argument lives in `intelligent-harness.md`; the demo does not instrument or surface per-incident token counts or cost.
 
 ## Suggested Reading Order
 
