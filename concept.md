@@ -1,67 +1,80 @@
-# Autonomous Self-Healing Software Loop
+# The Intelligent Harness — Autonomous Self-Healing Software
+
+> **Part 1** introduced this as a self-healing incident-response loop. **Part 2** reframes the same system around the design decision that makes it work: the **intelligent harness**. This document carries the Part 2 framing. The Part 1 narrative is preserved in [`self-healing-loop.md`](self-healing-loop.md); the Part 2 essay is in [`intelligent-harness.md`](intelligent-harness.md).
 
 ## Core Concept
 
-The Autonomous Self-Healing Software Loop is an architecture where **observability and remediation are linked by specialized intelligence rather than human intervention**.
+The intelligent harness is a pattern: **a general-purpose LLM orchestrator that offloads domain-specific work to cheap, purpose-built SLM tools instead of reasoning through it on every call.**
 
-Traditional production incident response follows a slow, manual chain: an alert fires, a human gets paged, they read logs, diagnose the issue, write a fix, and push it through CI/CD. This system replaces that entire chain with a closed loop that operates in seconds.
+Most agentic systems ask one expensive model to do everything — read the crash log, reason about the domain, decide what to change, and apply the fix. That is several reasoning steps on expensive tokens, repeated from scratch on every incident. The harness separates the two jobs:
 
-### Architecture — Three Layers
+- **Coordination** stays with the orchestrator (Warp Oz). It is a general-purpose generalist: plan, edit files, run commands, verify, report.
+- **Domain reasoning** moves into fine-tuned **SLM tools**. Each tool is a cheap specialist that recognizes one failure mode and returns a structured instruction.
 
-This is the target architecture. The current repo implements the Worker-controlled demo loop with a Python example service, Distil diagnosis, Durable Object incident state, and Warp Oz remediation. dlt and CI/CD closure are future integration points, not required for the current demo.
+The orchestrator never touches the domain problem directly. It calls a tool, gets back a 50-token JSON contract, and executes. Domain reasoning that used to cost thousands of expensive tokens becomes a function call.
+
+### Architecture — Orchestrator, SLM Tools, Control Plane
+
+This is the target architecture. The current repo implements the Worker-controlled demo with a Python example service, a single registered SLM tool, Durable Object incident state, and Warp Oz remediation. dlt and CI/CD closure are future integration points, not required for the current demo.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                   PRODUCTION SYSTEM                      │
-│          (services, gateways, microservices)              │
+│                   PRODUCTION SYSTEM                       │
+│          (services, gateways, microservices)             │
 └────────────────────┬─────────────────────────────────────┘
                      │  traces / logs
                      ▼
 ┌──────────────────────────────────────────────────────────┐
-│              INGESTION / CONTROL LAYER                    │
-│   Streams production events into the Worker control       │
-│   plane, where they become diagnosis and remediation      │
-│   jobs. dlt can be added here for broader log pipelines.  │
-└────────────────────┬─────────────────────────────────────┘
-                     │  structured log events
-                     ▼
+│              CONTROL PLANE  (Cloudflare Worker)          │
+│   Ingests events, recognizes failures, and ROUTES each   │
+│   crash log to the SLM tool that owns its failure mode.  │
+│   Stores durable jobs and exposes the orchestrator API.  │
+│   Stays general-purpose — it never diagnoses anything.   │
+└──────────────┬───────────────────────────────────────────┘
+               │  crash log → matching tool
+               ▼
 ┌──────────────────────────────────────────────────────────┐
-│          DIAGNOSIS LAYER  —  "The Brain"                  │
-│   A Distil Labs SLM (Small Language Model), fine-tuned    │
-│   on the system's specific operational patterns.          │
-│                                                           │
-│   - Parses noisy, high-volume log streams                 │
-│   - Identifies root cause instantly                       │
-│   - Outputs a structured diagnosis (JSON)                 │
-└────────────────────┬─────────────────────────────────────┘
-                     │  structured diagnosis
-                     ▼
+│            SLM TOOLS  —  the cheap specialists           │
+│   Fine-tuned Distil Labs SLMs, one per failure mode.     │
+│   Each declares: a signature it matches, the model to    │
+│   call, the prompt (input contract), and the structured  │
+│   Diagnosis it returns (output contract).                │
+│                                                          │
+│   Add a failure mode → register another tool. The        │
+│   orchestrator does not get smarter; the harness does.   │
+└──────────────┬───────────────────────────────────────────┘
+               │  5-field JSON Diagnosis (the contract)
+               ▼
 ┌──────────────────────────────────────────────────────────┐
-│         REMEDIATION LAYER  —  "The Hands"                 │
-│   Warp Oz — an autonomous agentic CLI that:               │
-│                                                           │
-│   1. Receives the structured diagnosis                    │
-│   2. Spins up a terminal environment                      │
-│   3. Reproduces the failure                               │
-│   4. Applies a verified code fix                          │
-│   5. Reports verification back to the control plane       │
+│         ORCHESTRATOR  —  Warp Oz ("The Hands")           │
+│   An autonomous agentic CLI that:                        │
+│                                                          │
+│   1. Claims the structured diagnosis from the control    │
+│      plane (it never sees the raw crash log)             │
+│   2. Spins up a terminal environment                     │
+│   3. Applies the scoped fix the contract specifies       │
+│   4. Runs verification                                   │
+│   5. Reports fixed/failed back to the control plane      │
 └──────────────────────────────────────────────────────────┘
 ```
 
+In this repo, the SLM tool registry lives in [`worker/src/harness.ts`](worker/src/harness.ts). The control plane in [`worker/src/index.ts`](worker/src/index.ts) routes to it via `selectTool()`.
+
 ### Key Design Decision
 
-Diagnosis and remediation are **deliberately decoupled**:
+Coordination and domain reasoning are **deliberately decoupled**, and the boundary between them is a strict output contract:
 
-- **Distil Labs SLM** stays small and fast — optimized purely for pattern recognition across operational traces.
+- **Distil Labs SLM tools** stay small and fast — optimized purely for pattern recognition across one system's operational traces.
 - **Warp Oz** handles multi-step agentic execution — file edits, shell commands, git operations, CI triggers.
+- **The output contract** (a 5-field JSON `Diagnosis`) is the entire interface. Oz reads the fields and executes; it does not parse prose or judge correctness. The contract is also the trust boundary — Oz never sees the raw crash log, telemetry, or customer data.
 
-This separation means each component can be fine-tuned, scaled, and upgraded independently.
+This separation means each component can be fine-tuned, scaled, and upgraded independently, and the system scales by **adding tools, not by making the orchestrator smarter**.
 
 ### Net Effect
 
-Reactive human on-call is replaced by a closed-loop self-healing cycle:
+Reactive human on-call is replaced by a closed-loop self-healing cycle where the expensive model barely does any work:
 
-**Observe → Diagnose → Fix → Deploy** — measured in seconds, not hours.
+**Observe → Route → Diagnose (SLM) → Fix (Oz) → Deploy** — measured in seconds, not hours, and at a fraction of the token cost of an all-LLM agent.
 
 ---
 
@@ -121,12 +134,18 @@ The gateway is back online — no human paged, no downtime.
 
 ## Roadmap
 
-### Phase 1 — Current (Worker-Controlled Loop)
+### Phase 1 — Current (Harness with one SLM tool)
 
 - Python IoT gateway sends production-style telemetry to the Cloudflare Worker through `POST /api/telemetry`.
 - Svelte dashboard on Cloudflare Pages triggers demo events through `POST /api/demo/telemetry` and watches incident state.
-- Worker validates payloads, calls Distil Labs SLM on crash, stores durable remediation jobs, and exposes the Oz job API.
+- The Worker control plane validates payloads, routes the crash log through the SLM tool registry (`selectTool`), calls the matching Distil tool, stores durable remediation jobs, and exposes the Oz job API.
 - Warp Oz claims the job, applies the scoped fix, verifies it, and reports completion back to the Worker.
+
+### Phase 1.5 — Multiple SLM tools
+
+- Register additional tools in `worker/src/harness.ts` for other failure modes: dependency version conflicts, permission errors, certificate expirations, resource-limit breaches.
+- The control plane already routes by failure signature, so a new tool needs only its own `matches`, `model`, `buildPrompt`, and `validate`. The orchestrator and the rest of the loop stay unchanged.
+- Routing can itself graduate to an SLM tool — a classifier that reads the crash log and returns which specialist to invoke.
 
 ### Phase 2 — WebSocket Live Streaming
 

@@ -1,5 +1,11 @@
 /**
- * Self-Healing Loop — Cloudflare Worker (Backend API)
+ * Self-Healing Loop — Cloudflare Worker (the harness control plane)
+ *
+ * This Worker is the control plane in the intelligent-harness architecture. It
+ * stays general-purpose: it ingests events, routes each crash log to the SLM
+ * tool that owns its failure mode (see `harness.ts`), stores durable state, and
+ * exposes the job API that the orchestrator (Warp Oz) consumes. The domain
+ * reasoning lives in the SLM tools, not here.
  *
  * Standalone Worker handling:
  *   POST /api/telemetry      — Production telemetry ingest and diagnosis on reject
@@ -9,6 +15,14 @@
  */
 
 import demoContract from '../../config/demo_contract.json';
+import {
+	type Diagnosis,
+	type JsonValue,
+	isDiagnosis,
+	isJsonValue,
+	isRecord,
+	selectTool,
+} from './harness';
 
 export interface Env {
 	DISTIL_API_KEY: string;
@@ -22,16 +36,6 @@ export interface Env {
 	OZ_AUTO_TRIGGER?: string;
 	WORKER_PUBLIC_URL?: string;
 	ALLOWED_ORIGIN?: string;
-}
-
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-
-interface Diagnosis {
-	root_cause: string;
-	file: string;
-	variable: string;
-	fix_action: string;
-	new_value: JsonValue;
 }
 
 type IncidentStatus = 'diagnosis_ready' | 'claimed' | 'running' | 'fixed' | 'failed' | 'cleared';
@@ -81,6 +85,7 @@ interface TelemetryValidationResult {
 
 interface DiagnosisRunResult {
 	diagnosis: unknown;
+	tool_id: string;
 	prompt_length: number;
 	stored: boolean;
 	timestamp: string | null;
@@ -90,8 +95,10 @@ interface DiagnosisRunResult {
 }
 
 // ─── Constants ───────────────────────────────────────────
+// Telemetry validation lives in the control plane: the Worker recognizes a bad
+// payload and emits the crash log. Diagnosing that crash log is the SLM tool's
+// job (see harness.ts).
 const GATEWAY_CONTRACT = demoContract.iot_gateway;
-const DIAGNOSIS_CONTRACT = demoContract.diagnosis;
 const APPROVED_FIELDS = GATEWAY_CONTRACT.approved_schema;
 const MQTT_TOPIC = GATEWAY_CONTRACT.mqtt_topic;
 const DEFAULT_OZ_AGENT_API_URL = 'https://app.warp.dev/api/v1/agent/run';
@@ -112,29 +119,6 @@ function json(data: unknown, status = 200): Response {
 		status,
 		headers: { 'Content-Type': 'application/json' },
 	});
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-	if (value === null) return true;
-	if (['string', 'number', 'boolean'].includes(typeof value)) return true;
-	if (Array.isArray(value)) return value.every(isJsonValue);
-	if (isRecord(value)) return Object.values(value).every(isJsonValue);
-	return false;
-}
-
-function isDiagnosis(value: unknown): value is Diagnosis {
-	if (!isRecord(value)) return false;
-	return (
-		typeof value.root_cause === 'string' &&
-		typeof value.file === 'string' &&
-		typeof value.variable === 'string' &&
-		typeof value.fix_action === 'string' &&
-		isJsonValue(value.new_value)
-	);
 }
 
 function createRemediationEvent(type: string, message: string, details?: JsonValue): RemediationEvent {
@@ -172,6 +156,20 @@ function createRemediationJob(
 			createRemediationEvent('diagnosis_completed', 'Structured diagnosis created and queued for Oz.'),
 		],
 	};
+}
+
+/**
+ * The output contract as an enforced trust boundary.
+ *
+ * The orchestrator (Oz) only ever receives the scoped remediation instruction —
+ * never the raw crash log or telemetry. The crash log stays on the Worker-owned
+ * incident record, where operators and the dashboard can still see it; it is
+ * stripped from the job handed to Oz. This makes the privacy boundary described
+ * in intelligent-harness.md a property of the code, not just a convention.
+ */
+function toAgentJob(job: RemediationJob): RemediationJob {
+	const { crash_log: _crashLog, prompt_length: _promptLength, ...agentJob } = job;
+	return agentJob;
 }
 
 function incidentStore(env: Env): DurableObjectStub {
@@ -213,42 +211,6 @@ Constraints:
 - Do not modify .env or log secrets.
 - Do not make unrelated code changes.
 - If the job targets anything outside the repository, mark the job failed.`;
-}
-
-function buildPrompt(crashLog: string): string {
-	const codebaseContext = buildCodebaseContext();
-
-	return (
-		'You are an IoT infrastructure diagnostics engine.\n' +
-		'You have access to the following codebase information:\n\n' +
-		codebaseContext +
-		'\n\n--- CRASH LOG ---\n' +
-		crashLog.trim() +
-		'\n--- END LOG ---\n\n' +
-		'Analyze the crash log above. Using ONLY the files and variables listed ' +
-		'in the CODEBASE MANIFEST, produce a single JSON object with these fields:\n' +
-		'  "root_cause": short description of the failure,\n' +
-		'  "file": exact filename that must be edited,\n' +
-		'  "variable": exact variable name that must be changed,\n' +
-		'  "fix_action": what to do (e.g. append a value to a list),\n' +
-		'  "new_value": the updated value after the fix.\n\n' +
-		'Respond with ONLY the JSON object. No markdown, no explanation, no repetition.\n'
-	);
-}
-
-function buildCodebaseContext(): string {
-	return [
-		'CODEBASE MANIFEST:',
-		`- File: ${GATEWAY_CONTRACT.schema_file}`,
-		`  - Field: ${GATEWAY_CONTRACT.schema_path} = ${JSON.stringify(APPROVED_FIELDS)}`,
-		`  - Remediation: ${DIAGNOSIS_CONTRACT.fix_action}`,
-		`  - Updated value: ${JSON.stringify(DIAGNOSIS_CONTRACT.new_value)}`,
-		`- File: ${GATEWAY_CONTRACT.file}`,
-		`  - MQTT topic: ${MQTT_TOPIC}`,
-		`  - Behavior: ${GATEWAY_CONTRACT.behavior}`,
-		`- File: iot-gateway/reproduce_crash.py`,
-		`  - Sends test payload: ${JSON.stringify(demoContract.payloads.bad)}`,
-	].join('\n');
 }
 
 function extractFirstJson(text: string): string {
@@ -473,7 +435,8 @@ export class IncidentStore {
 		job.events.push(createRemediationEvent('oz_claimed', 'Warp Oz claimed the remediation job.'));
 		await this.updateJob(job);
 
-		return { status: 'claimed', incident_id: job.id, job };
+		// Hand Oz only the scoped instruction — the crash log stays on the Worker.
+		return { status: 'claimed', incident_id: job.id, job: toAgentJob(job) };
 	}
 
 	private async appendEvent(
@@ -575,6 +538,7 @@ async function processTelemetryPayload(
 		const diagnosis = await diagnoseCrashLog(validation.result.crash_log, env, requestOrigin);
 		if (diagnosis.ok) {
 			body.diagnosis = diagnosis.data.diagnosis;
+			body.tool_id = diagnosis.data.tool_id;
 			body.prompt_length = diagnosis.data.prompt_length;
 			body.stored = diagnosis.data.stored;
 			body.incident_id = diagnosis.data.incident_id;
@@ -651,7 +615,23 @@ async function diagnoseCrashLog(
 	| { ok: true; status: 200; data: DiagnosisRunResult }
 	| { ok: false; status: number; data: Record<string, unknown> }
 > {
-	const prompt = buildPrompt(crash_log);
+	// Route the crash log to the SLM tool that owns this failure mode. If no tool
+	// is registered for the signature, the control plane does not improvise — it
+	// reports that no specialist is available rather than guessing a fix.
+	const tool = selectTool(crash_log);
+	if (!tool) {
+		return {
+			ok: false,
+			status: 422,
+			data: {
+				error: 'No SLM tool is registered for this failure signature',
+				hint: 'Register a tool for this failure mode in worker/src/harness.ts',
+				crash_log,
+			},
+		};
+	}
+
+	const prompt = tool.buildPrompt(crash_log);
 
 	try {
 		const resp = await fetch(env.DISTIL_ENDPOINT, {
@@ -662,7 +642,7 @@ async function diagnoseCrashLog(
 			},
 			body: JSON.stringify({
 				max_tokens: 250,
-				model: env.DISTIL_MODEL,
+				model: tool.model(env),
 				stream: false,
 				temperature: 0,
 				prompt,
@@ -698,7 +678,7 @@ async function diagnoseCrashLog(
 		let incidentId: string | null = null;
 		let job: RemediationJob | null = null;
 		let ozTrigger: unknown = null;
-		if (isDiagnosis(diagnosis)) {
+		if (tool.validate(diagnosis)) {
 			const storeResp = await incidentStoreFetch(env, '/jobs', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -725,6 +705,7 @@ async function diagnoseCrashLog(
 			status: 200,
 			data: {
 				diagnosis,
+				tool_id: tool.id,
 				prompt_length: prompt.length,
 				stored: storedAt !== null,
 				timestamp: storedAt,
